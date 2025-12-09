@@ -39,74 +39,93 @@ def read_nfc_tag():
 
 
 def write_nfc_tag(serial_number):
-    """Write serial number to NFC tag using nfcpy"""
+    """Write serial number to NFC tag using nfc-mfsetuid"""
+    print(f"\nPreparing to write: '{serial_number}'")
+    print("Waiting for NFC tag to write to...\n")
+
     try:
-        import nfc
-        from ndef import TextRecord, Message
+        # For writing UID/serial to Mifare Classic cards
+        result = subprocess.run(
+            ['nfc-mfsetuid', serial_number],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
 
-        print(f"\nPreparing to write: '{serial_number}'")
-        print("Waiting for NFC tag to write to...\n")
+        print(result.stdout)
 
-        # Create NDEF message with the serial number
-        record = TextRecord(serial_number, language='en')
-        message = Message(record)
-
-        # Try to connect and write
-        clf = nfc.ContactlessFrontend()
-
-        with clf:
-            from nfc.clf import RemoteTarget
-
-            # Poll for tag
-            target = clf.sense(RemoteTarget('106A'), timeout=10)
-
-            if target is None:
-                print("✗ No tag detected")
-                return False
-
-            print("✓ Tag detected!")
-
-            # Activate tag
-            tag = nfc.tag.activate(clf, target)
-
-            if tag is None:
-                print("✗ Failed to activate tag")
-                return False
-
-            print(f"✓ Tag activated: {tag.identifier.hex()}")
-
-            # Check if writable
-            if tag.ndef is None:
-                print("✗ Tag does not support NDEF")
-                return False
-
-            if not tag.ndef.is_writeable:
-                print("✗ Tag is read-only")
-                return False
-
-            # Write the message
-            print("Writing to tag...")
-            tag.ndef.message = message
-
+        if result.returncode == 0:
             print(f"✓ Successfully wrote: '{serial_number}'")
-            print(f"  Tag ID: {tag.identifier.hex()}")
-            print(f"  NDEF Capacity: {tag.ndef.capacity} bytes")
-            print(f"  Used: {tag.ndef.length} bytes")
-
             return True
+        else:
+            if result.stderr:
+                print(f"Error: {result.stderr}")
+            print("✗ Failed to write tag")
+            return False
 
-    except ImportError:
-        print("✗ nfcpy or ndef not installed")
-        print("Install: pip install nfcpy ndef")
+    except FileNotFoundError:
+        print("✗ nfc-mfsetuid not found")
+        print("Install: sudo apt-get install nfc-tools")
         return False
-    except IOError:
-        print("✗ Could not connect to NFC reader")
-        print("Make sure ACR122U is connected")
+    except subprocess.TimeoutExpired:
+        print("✗ Timeout - no tag detected or write failed")
         return False
     except Exception as e:
         print(f"✗ Error: {e}")
-        import traceback
-        traceback.print_exc()
+        return False
+
+
+def write_ndef_text(serial_number):
+    """Alternative: write as NDEF text record"""
+    print(f"\nPreparing to write NDEF: '{serial_number}'")
+    print("Waiting for NFC tag...\n")
+
+    try:
+        # Create temporary NDEF message file
+        import tempfile
+        import os
+
+        # Try using nfcpy with explicit Python path
+        script = f"""
+import sys
+sys.path.insert(0, '/usr/lib/python3/dist-packages')
+from nfc import ContactlessFrontend
+from nfc.clf import RemoteTarget
+from ndef import TextRecord, Message
+
+try:
+    clf = ContactlessFrontend()
+    with clf:
+        target = clf.sense(RemoteTarget('106A'), timeout=10)
+        if target:
+            tag = nfc.tag.activate(clf, target)
+            if tag and tag.ndef and tag.ndef.is_writeable:
+                record = TextRecord('{serial_number}', language='en')
+                tag.ndef.message = Message(record)
+                print("✓ Successfully wrote NDEF")
+            else:
+                print("✗ Tag not writable")
+        else:
+            print("✗ No tag detected")
+except Exception as e:
+    print(f"✗ Error: {{e}}")
+"""
+
+        result = subprocess.run(
+            [sys.executable, '-c', script],
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr)
+
+        return result.returncode == 0
+
+    except Exception as e:
+        print(f"✗ Error: {e}")
         return False
 
 
@@ -142,33 +161,50 @@ def main():
     while True:
         print("\nOptions:")
         print("  1. Read NFC tag")
-        print("  2. Write serial number to tag")
-        print("  3. Exit")
+        print("  2. Write serial number to tag (UID)")
+        print("  3. Write as NDEF text")
+        print("  4. Exit")
 
-        choice = input("\nSelect option (1-3): ").strip()
+        choice = input("\nSelect option (1-4): ").strip()
 
         if choice == '1':
             print()
             read_nfc_tag()
 
         elif choice == '2':
-            serial = input("\nEnter serial number to write: ").strip()
+            serial = input("\nEnter serial number (hex, e.g. 1B2A0A31): ").strip()
 
             if not serial:
                 print("✗ Serial number cannot be empty")
                 continue
 
-            if len(serial) > 255:
-                print("✗ Serial number too long (max 255 characters)")
+            # Validate hex format
+            try:
+                int(serial, 16)
+            except ValueError:
+                print("✗ Invalid hex format")
                 continue
 
-            confirm = input(f"Write '{serial}' to tag? (y/n): ").strip().lower()
+            confirm = input(f"Write UID '{serial}' to tag? (y/n): ").strip().lower()
             if confirm == 'y':
                 write_nfc_tag(serial)
             else:
                 print("Cancelled")
 
         elif choice == '3':
+            serial = input("\nEnter serial number to write as text: ").strip()
+
+            if not serial:
+                print("✗ Serial number cannot be empty")
+                continue
+
+            confirm = input(f"Write '{serial}' to tag as NDEF? (y/n): ").strip().lower()
+            if confirm == 'y':
+                write_ndef_text(serial)
+            else:
+                print("Cancelled")
+
+        elif choice == '4':
             print("Exiting...")
             break
 
