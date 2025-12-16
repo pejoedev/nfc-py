@@ -7,7 +7,7 @@ def read_nfc_tag():
     """Read NFC tag using libnfc (nfc-poll)"""
     print("NFC Tag Reader - ACR122U")
     print("=" * 50)
-    print("Waiting for NFC tag...\n")
+    print("Place NFC tag on reader (and remove after approx 5sec to continue)...\n")
 
     try:
         result = subprocess.run(
@@ -41,7 +41,8 @@ def read_nfc_tag():
 
 def identify_card_type():
     """Identify the NFC card type"""
-    print("Identifying card type...\n")
+    print("Identifying card type...")
+    print("Place NFC tag on reader (and remove after approx 5sec to continue)...\n")
 
     try:
         result = subprocess.run(
@@ -55,23 +56,25 @@ def identify_card_type():
 
         if "MIFARE Classic" in output:
             print("Card Type: MIFARE Classic 1K (should support UID write)")
-            return "mifare_classic"
+            card_type = "mifare_classic"
         elif "Mifare Ultralight" in output:
             print("Card Type: Mifare Ultralight (limited write)")
-            return "mifare_ultralight"
+            card_type = "mifare_ultralight"
         elif "NTAG" in output:
             print("Card Type: NTAG (use NDEF for text)")
-            return "ntag"
+            card_type = "ntag"
         elif "ISO/IEC 14443A" in output:
             print("Card Type: ISO14443A (generic)")
             print("\nFull output:")
             print(output)
-            return "iso14443a"
+            card_type = "iso14443a"
         else:
             print("Card Type: Unknown")
             print("\nFull output:")
             print(output)
-            return "unknown"
+            card_type = "unknown"
+
+        return card_type
 
     except FileNotFoundError:
         print("✗ nfc-poll not installed")
@@ -155,7 +158,7 @@ def diagnose_write_capability():
     """Test if card supports UID write"""
     print("Card vendor detection:")
     print("  Chinese clones → nfc-mfsetuid will work")
-    print("  Genuine/commercial → use option 5 (NDEF) instead\n")
+    print("  Genuine/commercial → use alternative method\n")
 
     try:
         # Try nfc-mfsetuid with a dummy value to see if it detects the card
@@ -194,7 +197,7 @@ def diagnose_write_capability():
 def write_nfc_tag(serial_number):
     """Write serial number to NFC tag using nfc-mfsetuid"""
     print(f"\nPreparing to write: '{serial_number}'")
-    print("Waiting for NFC tag to write to...\n")
+    print("Place NFC tag on reader...\n")
 
     try:
         result = subprocess.run(
@@ -217,16 +220,13 @@ def write_nfc_tag(serial_number):
             if "No suitable card found" in error_text:
                 print("→ Card not detected or not compatible")
                 print("→ This card may not support UID rewriting")
-                print("→ Use option 5 (NDEF text) instead")
             elif "Not a special card" in error_text or \
                  "not special" in error_text.lower():
                 print("→ This is NOT a Chinese clone card")
                 print("→ nfc-mfsetuid only works with clones")
-                print("→ Use option 5 (NDEF text) instead")
             elif "Permission denied" in error_text or \
                  "not allowed" in error_text.lower():
                 print("→ Write permission denied")
-                print("→ Use option 5 (NDEF text) instead")
             else:
                 print("Error output:", error_text)
 
@@ -239,60 +239,6 @@ def write_nfc_tag(serial_number):
     except subprocess.TimeoutExpired:
         print("✗ Timeout - no tag detected")
         return False
-    except Exception as e:
-        print(f"✗ Error: {e}")
-        return False
-
-
-def write_ndef_text(serial_number):
-    """Alternative: write as NDEF text record"""
-    print(f"\nPreparing to write NDEF: '{serial_number}'")
-    print("Waiting for NFC tag...\n")
-
-    try:
-        script = f"""
-import sys
-sys.path.insert(0, '/usr/lib/python3/dist-packages')
-try:
-    from nfc import ContactlessFrontend
-    from nfc.clf import RemoteTarget
-    from ndef import TextRecord, Message
-except ImportError as e:
-    print("✗ Required package missing:", e)
-    print("Install: pip install nfcpy ndef")
-    sys.exit(1)
-
-try:
-    clf = ContactlessFrontend()
-    with clf:
-        target = clf.sense(RemoteTarget('106A'), timeout=10)
-        if target:
-            tag = nfc.tag.activate(clf, target)
-            if tag and tag.ndef and tag.ndef.is_writeable:
-                record = TextRecord('{serial_number}', language='en')
-                tag.ndef.message = Message(record)
-                print("✓ Successfully wrote NDEF: {serial_number}")
-            else:
-                print("✗ Tag not writable or no NDEF support")
-        else:
-            print("✗ No tag detected")
-except Exception as e:
-    print(f"✗ Error: {{e}}")
-"""
-
-        result = subprocess.run(
-            [sys.executable, '-c', script],
-            capture_output=True,
-            text=True,
-            timeout=15
-        )
-
-        print(result.stdout)
-        if result.stderr and "Deprecation" not in result.stderr:
-            print(result.stderr)
-
-        return result.returncode == 0
-
     except Exception as e:
         print(f"✗ Error: {e}")
         return False
@@ -326,7 +272,6 @@ def main():
     print("=" * 50)
     print("\nIMPORTANT:")
     print("• Option 4 only works with CHINESE CLONE Mifare 1K cards")
-    print("• Most commercial/genuine cards require option 5 (NDEF)")
     print("=" * 50 + "\n")
 
     list_devices()
@@ -337,10 +282,9 @@ def main():
         print("  2. Identify card type")
         print("  3. Diagnose card (UID write capability)")
         print("  4. Write serial number to tag (UID - clones only)")
-        print("  5. Write as NDEF text (universal)")
-        print("  6. Exit")
+        print("  5. Exit")
 
-        choice = input("\nSelect option (1-6): ").strip()
+        choice = input("\nSelect option (1-5): ").strip()
 
         if choice == '1':
             print()
@@ -355,73 +299,37 @@ def main():
             diagnose_card()
 
         elif choice == '4':
-            card_type = identify_card_type()
-
-            if card_type in ["mifare_classic", "iso14443a"]:
-                serial = input(
-                    "\nEnter serial number (hex, e.g. "
-                    "1B2A0A31): "
-                ).strip()
-
-                if not serial:
-                    print("✗ Serial number cannot be empty")
-                    continue
-
-                if len(serial) != 8:
-                    print("✗ Serial must be exactly 8 hex characters")
-                    continue
-
-                try:
-                    int(serial, 16)
-                except ValueError:
-                    print("✗ Invalid hex format")
-                    continue
-
-                confirm = (
-                    input(
-                        f"Write UID '{serial}' to tag? (y/n): "
-                    )
-                    .strip()
-                    .lower()
-                )
-                if confirm == 'y':
-                    write_nfc_tag(serial)
-                else:
-                    print("Cancelled")
-
-            elif card_type in ["mifare_ultralight", "ntag"]:
-                print("\n⚠ This card type doesn't support UID rewriting")
-                print("Use option 5 (NDEF text) instead")
-
-            elif card_type == "unknown":
-                print("\n⚠ Unknown card type")
-                print("Try option 3 (Diagnose) first")
-
-            elif card_type is None:
-                print("\n✗ Could not identify card")
-
-        elif choice == '5':
             serial = input(
-                "\nEnter text to write (any string): "
+                "\nEnter serial number (hex, e.g. C2B44B41): "
             ).strip()
 
             if not serial:
-                print("✗ Text cannot be empty")
+                print("✗ Serial number cannot be empty")
+                continue
+
+            if len(serial) != 8:
+                print("✗ Serial must be exactly 8 hex characters")
+                continue
+
+            try:
+                int(serial, 16)
+            except ValueError:
+                print("✗ Invalid hex format")
                 continue
 
             confirm = (
                 input(
-                    f"Write '{serial}' to tag as NDEF? (y/n): "
+                    f"Write UID '{serial}' to tag? (y/n): "
                 )
                 .strip()
                 .lower()
             )
             if confirm == 'y':
-                write_ndef_text(serial)
+                write_nfc_tag(serial)
             else:
                 print("Cancelled")
 
-        elif choice == '6':
+        elif choice == '5':
             print("Exiting...")
             break
 
